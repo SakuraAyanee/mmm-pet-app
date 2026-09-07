@@ -15,8 +15,8 @@
 ```bash
 npm install
 npm run dev
-
-📅 独立开发日记 (Update Diary)
+```
+## 📅 独立开发日记 (Update Diary)
 积沙成塔。记录每天下班后的微小进展与重构思考。
 
 2026-09-08
