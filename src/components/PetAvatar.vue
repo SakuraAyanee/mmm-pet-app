@@ -2,24 +2,17 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { isTauri } from '@tauri-apps/api/core'
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window'
-import type { PetState } from '../types/pet'
 import mamimiImage from '../assets/characters/mamimi/mamimi-cutout.png'
 
-const petState = ref<PetState>({
-  x: 0,
-  y: 0,
-  mood: 'idle',
-  })
-  
-const petName = ref('MMM')
-const affection = ref(0)
-const petColor = ref('hsl(32 100% 78%)')
 const petImage = ref<HTMLImageElement | null>(null)
 const dragHandle = ref<HTMLButtonElement | null>(null)
-const isPointerOverPet = ref(false)
+const isJumping = ref(false)
+const isDragHandleVisible = ref(false)
 
 const appWindow = getCurrentWindow()
 const alphaThreshold = 12
+const dragThreshold = 6
+const dragHandleHideDelay = 420
 let alphaPixels: Uint8ClampedArray | null = null
 let imageWidth = 0
 let imageHeight = 0
@@ -27,20 +20,88 @@ let pointerTimer: ReturnType<typeof setInterval> | undefined
 let isCheckingPointer = false
 let ignoresCursorEvents = false
 let isDraggingWindow = false
+let petPointerStart: { x: number; y: number } | null = null
+let petDragStarted = false
+let dragHandleHideTimer: ReturnType<typeof setTimeout> | undefined
 
-function movePet() {
-  const distance = 120
-
-  petState.value.x = Math.round((Math.random() * 2 - 1) * distance)
-  petState.value.y = Math.round((Math.random() * 2 - 1) * distance)
-  petState.value.mood = 'happy'
-  petColor.value = `hsl(${Math.floor(Math.random() * 360)} 75% 78%)`
-  affection.value += 1
+function jumpPet() {
+  isJumping.value = false
+  requestAnimationFrame(() => {
+    isJumping.value = true
+  })
 }
 
 async function startWindowDrag() {
   isDraggingWindow = true
   await appWindow.startDragging()
+}
+
+function beginPetGesture(event: PointerEvent) {
+  const target = event.currentTarget as HTMLElement
+  petPointerStart = { x: event.clientX, y: event.clientY }
+  petDragStarted = false
+  target.setPointerCapture(event.pointerId)
+}
+
+function trackPetGesture(event: PointerEvent) {
+  if (!petPointerStart || petDragStarted) {
+    return
+  }
+
+  const distance = Math.hypot(
+    event.clientX - petPointerStart.x,
+    event.clientY - petPointerStart.y,
+  )
+
+  if (distance < dragThreshold) {
+    return
+  }
+
+  petDragStarted = true
+  void startWindowDrag()
+}
+
+function finishPetGesture(event: PointerEvent) {
+  const target = event.currentTarget as HTMLElement
+
+  if (!petPointerStart) {
+    return
+  }
+
+  if (!petDragStarted) {
+    jumpPet()
+  }
+
+  if (target.hasPointerCapture(event.pointerId)) {
+    target.releasePointerCapture(event.pointerId)
+  }
+
+  petPointerStart = null
+}
+
+function cancelPetGesture() {
+  petPointerStart = null
+  petDragStarted = false
+}
+
+function showDragHandle() {
+  if (dragHandleHideTimer) {
+    clearTimeout(dragHandleHideTimer)
+    dragHandleHideTimer = undefined
+  }
+
+  isDragHandleVisible.value = true
+}
+
+function scheduleDragHandleHide() {
+  if (!isDragHandleVisible.value || dragHandleHideTimer) {
+    return
+  }
+
+  dragHandleHideTimer = setTimeout(() => {
+    isDragHandleVisible.value = false
+    dragHandleHideTimer = undefined
+  }, dragHandleHideDelay)
 }
 
 function preparePetAlphaMap() {
@@ -122,14 +183,18 @@ async function updateCursorEventMode() {
     ])
     const x = (pointer.x - windowPosition.x) / scaleFactor
     const y = (pointer.y - windowPosition.y) / scaleFactor
-    const receivesCursorEvents =
+    const isPointerInInteractiveArea =
       isDraggingWindow ||
       isPointOnOpaquePetPixel(x, y) ||
       isPointInsideElement(dragHandle.value, x, y)
 
-    isPointerOverPet.value = receivesCursorEvents && !isDraggingWindow
+    if (isPointerInInteractiveArea && !isDraggingWindow) {
+      showDragHandle()
+    } else if (!isDraggingWindow) {
+      scheduleDragHandleHide()
+    }
 
-    const shouldIgnoreCursorEvents = !receivesCursorEvents
+    const shouldIgnoreCursorEvents = !isPointerInInteractiveArea
     if (shouldIgnoreCursorEvents !== ignoresCursorEvents) {
       await appWindow.setIgnoreCursorEvents(shouldIgnoreCursorEvents)
       ignoresCursorEvents = shouldIgnoreCursorEvents
@@ -163,6 +228,10 @@ onUnmounted(() => {
     clearInterval(pointerTimer)
   }
 
+  if (dragHandleHideTimer) {
+    clearTimeout(dragHandleHideTimer)
+  }
+
   window.removeEventListener('mouseup', stopWindowDrag)
 
   if (ignoresCursorEvents) {
@@ -174,7 +243,7 @@ onUnmounted(() => {
 <template>
   <section
     class="pet-avatar"
-    :class="{ 'pet-avatar--interactive': isPointerOverPet }"
+    :class="{ 'pet-avatar--interactive': isDragHandleVisible }"
     aria-label="桌面宠物"
   >
     <button
@@ -193,26 +262,24 @@ onUnmounted(() => {
     <button
       type="button"
       class="pet-avatar__body"
-      :style="{
-        transform: `translate(${petState.x}px, ${petState.y}px)`,
-      }"
-      aria-label="点击移动宠物"
-      @click="movePet"
+      :class="{ 'pet-avatar__body--jumping': isJumping }"
+      aria-label="点击让宠物跳跃，拖动可移动窗口"
+      @animationend="isJumping = false"
+      @dragstart.prevent
+      @pointercancel="cancelPetGesture"
+      @pointerdown.left="beginPetGesture"
+      @pointermove="trackPetGesture"
+      @pointerup.left="finishPetGesture"
     >
       <img
         ref="petImage"
         :src="mamimiImage"
-        :alt="`${petName}，当前情绪：${petState.mood}`"
+        alt="田中摩美美桌面宠物"
+        draggable="false"
+        @dragstart.prevent
         @load="preparePetAlphaMap"
       />
     </button>
-    
-    <p>{{ petName }}</p>
-    <p class="pet-avatar__mood" :style="{ color: petColor }">
-      当前情绪：{{ petState.mood }}
-    </p>
-
-    <p>被摸次数：{{ affection }}</p>
   </section>
 </template>
 
@@ -263,7 +330,7 @@ onUnmounted(() => {
 }
 
 .pet-avatar--interactive .pet-avatar__drag-handle,
-.pet-avatar:focus-within .pet-avatar__drag-handle {
+.pet-avatar__drag-handle:focus-visible {
   opacity: 1;
   pointer-events: auto;
   visibility: visible;
@@ -275,9 +342,33 @@ onUnmounted(() => {
   border: 0;
   padding: 0;
   background: transparent;
-  cursor: pointer;
+  cursor: grab;
   line-height: 0;
-  transition: transform 300ms ease;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+
+.pet-avatar__body--jumping {
+  animation: pet-jump 480ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes pet-jump {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+
+  38% {
+    transform: translateY(-1.5rem) scale(1.015);
+  }
+
+  72% {
+    transform: translateY(0) scale(0.985);
+  }
+
+  100% {
+    transform: translateY(0) scale(1);
+  }
 }
 
 .pet-avatar__body img {
@@ -287,13 +378,13 @@ onUnmounted(() => {
   object-fit: contain;
   filter: drop-shadow(0 0.75rem 0.75rem rgb(0 0 0 / 20%));
   transition: filter 200ms ease;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
 }
 
 .pet-avatar__body:hover img {
   filter: drop-shadow(0 1rem 1rem rgb(0 0 0 / 28%));
 }
 
-p {
-  margin: 0;
-}
 </style>
