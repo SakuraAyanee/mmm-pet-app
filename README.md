@@ -32,7 +32,25 @@ npx tauri dev
 
 ✨ 交互：实现点击宠物方块事件。每次点击会随机更新坐标与背景色，将情绪设为 `happy`，并记录被摸次数；CSS `transition` 使移动和变色在 300ms 内平滑完成。
 
+#### 角色素材渲染
+
+✨ 视觉：将原来的爪印方块替换为透明背景的田中摩美美角色 PNG。`PetAvatar` 使用 `import` 引入图片，再通过 `<img>` 渲染；PNG 的 Alpha 通道决定哪些像素可见，透明背景不会显示为方形底色。
+
+📐 尺寸：角色原图为 `941 × 1672`，宽高比约为 `0.563`。CSS 使用 `width: min(72vw, 22rem)` 与 `height: min(68vh, 31rem)` 限制显示范围，再以 `object-fit: contain` 保持比例完整显示，避免图像拉伸或裁切。
+
+🎨 样式：点击容器保留为语义化的 `<button>`，因此原有的 `@click`、键盘焦点与随机移动逻辑无需改变；容器改为透明背景、零内边距，避免按钮默认样式产生额外边缘。`drop-shadow()` 会依据透明像素的轮廓生成阴影，比矩形 `box-shadow` 更贴合人物边缘。
+
+📝 思考：目前点击区域仍是角色所在的矩形容器，而非人物轮廓的像素级命中区。这种实现更简单稳定，适合作为桌面宠物的第一版交互。
+
 🖥️ 桌面化：为现有 Vue + Vite 前端初始化 Tauri 2，新增 `src-tauri/` Rust 原生端目录；配置 Vite 固定使用 5173 端口并忽略监听 `src-tauri/`。已通过 `npx tauri dev` 在 Windows 原生窗口中运行。
+
+#### 透明无边框窗口与拖动柄
+
+✨ 窗口：在 `tauri.conf.json` 中启用 `transparent: true` 与 `decorations: false`，并关闭 `shadow`。同时将网页根节点、`body` 和宠物容器背景设置为 `transparent`，使透明效果从原生窗口贯穿至 Vue 页面。
+
+🧭 操作：无边框窗口失去系统标题栏，因此在角色右上角增加了一个三横线拖动柄。它默认隐藏，仅在鼠标悬停宠物或组件获得键盘焦点时淡入显示。
+
+⚙️ 实现：拖动柄使用 Tauri 2 的 `data-tauri-drag-region="deep"` 标记；拖动柄内部的三条横线也能触发窗口移动，而角色本体保留 `@click="movePet"` 的随机移动互动。使用 `npx tauri dev` 可测试透明窗口与拖动行为。
 
 🛠️ 环境记录：Windows 上安装 Rust 时，`winget` 出现 `0x8a15000f`（软件源数据缺失）。改用 Rust 官方 `rustup-init.exe` 完成安装，并通过 Visual Studio Community 安装器补齐“使用 C++ 的桌面开发”组件。重新打开终端后，使用 `rustc --version` 和 `cargo --version` 验证环境。
 

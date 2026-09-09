@@ -1,7 +1,7 @@
 :root {
   font-family: system-ui, sans-serif;
   color: #222;
-  background: #fff;
+  background: transparent;
 }
 
 * {
@@ -10,9 +10,11 @@
 
 body {
   margin: 0;
+  background: transparent;
 }
 
 #app,
 .pet-app {
   min-height: 100vh;
+  background: transparent;
 }
