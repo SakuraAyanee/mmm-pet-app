@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { isTauri } from '@tauri-apps/api/core'
+import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window'
 import type { PetState } from '../types/pet'
 import mamimiImage from '../assets/characters/mamimi/mamimi-cutout.png'
 
@@ -13,6 +14,19 @@ const petState = ref<PetState>({
 const petName = ref('MMM')
 const affection = ref(0)
 const petColor = ref('hsl(32 100% 78%)')
+const petImage = ref<HTMLImageElement | null>(null)
+const dragHandle = ref<HTMLButtonElement | null>(null)
+const isPointerOverPet = ref(false)
+
+const appWindow = getCurrentWindow()
+const alphaThreshold = 12
+let alphaPixels: Uint8ClampedArray | null = null
+let imageWidth = 0
+let imageHeight = 0
+let pointerTimer: ReturnType<typeof setInterval> | undefined
+let isCheckingPointer = false
+let ignoresCursorEvents = false
+let isDraggingWindow = false
 
 function movePet() {
   const distance = 120
@@ -25,13 +39,146 @@ function movePet() {
 }
 
 async function startWindowDrag() {
-  await getCurrentWindow().startDragging()
+  isDraggingWindow = true
+  await appWindow.startDragging()
 }
+
+function preparePetAlphaMap() {
+  const image = petImage.value
+
+  if (!image || image.naturalWidth === 0 || image.naturalHeight === 0) {
+    return
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = image.naturalWidth
+  canvas.height = image.naturalHeight
+
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  if (!context) {
+    return
+  }
+
+  context.drawImage(image, 0, 0)
+  alphaPixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+  imageWidth = canvas.width
+  imageHeight = canvas.height
+}
+
+function isPointInsideElement(
+  element: HTMLElement | null,
+  x: number,
+  y: number,
+) {
+  if (!element) {
+    return false
+  }
+
+  const rect = element.getBoundingClientRect()
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+}
+
+function isPointOnOpaquePetPixel(x: number, y: number) {
+  const image = petImage.value
+  if (!image || !alphaPixels || imageWidth === 0 || imageHeight === 0) {
+    return false
+  }
+
+  const rect = image.getBoundingClientRect()
+  const scale = Math.min(rect.width / imageWidth, rect.height / imageHeight)
+  const renderedWidth = imageWidth * scale
+  const renderedHeight = imageHeight * scale
+  const renderedLeft = rect.left + (rect.width - renderedWidth) / 2
+  const renderedTop = rect.top + (rect.height - renderedHeight) / 2
+
+  if (
+    x < renderedLeft ||
+    x >= renderedLeft + renderedWidth ||
+    y < renderedTop ||
+    y >= renderedTop + renderedHeight
+  ) {
+    return false
+  }
+
+  const pixelX = Math.floor((x - renderedLeft) / scale)
+  const pixelY = Math.floor((y - renderedTop) / scale)
+  const alphaIndex = (pixelY * imageWidth + pixelX) * 4 + 3
+
+  return alphaPixels[alphaIndex] > alphaThreshold
+}
+
+async function updateCursorEventMode() {
+  if (isCheckingPointer || !alphaPixels) {
+    return
+  }
+
+  isCheckingPointer = true
+
+  try {
+    const [pointer, windowPosition, scaleFactor] = await Promise.all([
+      cursorPosition(),
+      appWindow.innerPosition(),
+      appWindow.scaleFactor(),
+    ])
+    const x = (pointer.x - windowPosition.x) / scaleFactor
+    const y = (pointer.y - windowPosition.y) / scaleFactor
+    const receivesCursorEvents =
+      isDraggingWindow ||
+      isPointOnOpaquePetPixel(x, y) ||
+      isPointInsideElement(dragHandle.value, x, y)
+
+    isPointerOverPet.value = receivesCursorEvents && !isDraggingWindow
+
+    const shouldIgnoreCursorEvents = !receivesCursorEvents
+    if (shouldIgnoreCursorEvents !== ignoresCursorEvents) {
+      await appWindow.setIgnoreCursorEvents(shouldIgnoreCursorEvents)
+      ignoresCursorEvents = shouldIgnoreCursorEvents
+    }
+  } finally {
+    isCheckingPointer = false
+  }
+}
+
+function stopWindowDrag() {
+  isDraggingWindow = false
+}
+
+onMounted(() => {
+  if (!isTauri()) {
+    return
+  }
+
+  preparePetAlphaMap()
+  window.addEventListener('mouseup', stopWindowDrag)
+  void updateCursorEventMode()
+  pointerTimer = setInterval(() => void updateCursorEventMode(), 80)
+})
+
+onUnmounted(() => {
+  if (!isTauri()) {
+    return
+  }
+
+  if (pointerTimer) {
+    clearInterval(pointerTimer)
+  }
+
+  window.removeEventListener('mouseup', stopWindowDrag)
+
+  if (ignoresCursorEvents) {
+    void appWindow.setIgnoreCursorEvents(false)
+  }
+})
 </script>
 
 <template>
-  <section class="pet-avatar" aria-label="桌面宠物">
+  <section
+    class="pet-avatar"
+    :class="{ 'pet-avatar--interactive': isPointerOverPet }"
+    aria-label="桌面宠物"
+  >
     <button
+      ref="dragHandle"
       type="button"
       class="pet-avatar__drag-handle"
       aria-label="拖动窗口"
@@ -52,7 +199,12 @@ async function startWindowDrag() {
       aria-label="点击移动宠物"
       @click="movePet"
     >
-      <img :src="mamimiImage" :alt="`${petName}，当前情绪：${petState.mood}`" />
+      <img
+        ref="petImage"
+        :src="mamimiImage"
+        :alt="`${petName}，当前情绪：${petState.mood}`"
+        @load="preparePetAlphaMap"
+      />
     </button>
     
     <p>{{ petName }}</p>
@@ -90,8 +242,12 @@ async function startWindowDrag() {
   cursor: grab;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-0.25rem);
-  transition: opacity 160ms ease, transform 160ms ease;
+  visibility: hidden;
+  transform: translateY(-0.4rem) scale(0.92);
+  transition:
+    opacity 160ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 160ms;
 }
 
 .pet-avatar__drag-handle:active {
@@ -106,11 +262,13 @@ async function startWindowDrag() {
   background: #fff;
 }
 
-.pet-avatar:hover .pet-avatar__drag-handle,
+.pet-avatar--interactive .pet-avatar__drag-handle,
 .pet-avatar:focus-within .pet-avatar__drag-handle {
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(0);
+  visibility: visible;
+  transform: translateY(0) scale(1);
+  transition-delay: 180ms, 180ms, 180ms;
 }
 
 .pet-avatar__body {
