@@ -50,7 +50,17 @@ npx tauri dev
 
 🧭 操作：无边框窗口失去系统标题栏，因此在角色右上角增加了一个三横线拖动柄。它默认隐藏，仅在鼠标悬停宠物或组件获得键盘焦点时淡入显示。
 
-⚙️ 实现：拖动柄使用 Tauri 2 的 `data-tauri-drag-region="deep"` 标记；拖动柄内部的三条横线也能触发窗口移动，而角色本体保留 `@click="movePet"` 的随机移动互动。使用 `npx tauri dev` 可测试透明窗口与拖动行为。
+⚙️ 最终实现：拖动柄在 `mousedown`（鼠标左键按下）时调用 Tauri 的 `getCurrentWindow().startDragging()`；角色本体仍保留 `@click="movePet"` 的随机移动互动。能力配置中额外授予 `core:window:allow-start-dragging` 权限，使前端能够请求原生窗口开始拖动。
+
+#### 拖动失效复盘：光标变成手势，窗口却没有移动
+
+🐛 现象：最初给三横线拖动柄添加 `data-tauri-drag-region="deep"`，再尝试让按钮与每一条横线直接拥有 `data-tauri-drag-region`。鼠标移上去会显示拖动柄，光标也会变为手势，但按住并移动鼠标时，原生窗口位置不变。
+
+🔍 排查：`cursor: grab` 是 CSS 样式，只能说明网页把鼠标显示成“可拖动”，不能证明 Tauri 收到了拖动指令。排查时还发现正在运行的 `src-tauri/target/debug/app.exe` 会锁定同名文件，导致新的调试构建无法覆盖旧程序；因此测试前要先关闭旧窗口，并使用 `npx tauri dev` 重新启动。仅运行 `npm run dev` 会打开浏览器页面，浏览器没有 Tauri 原生窗口，当然也无法移动桌面窗口。
+
+✅ 修复：不再把窗口拖动交给 HTML 属性自动识别，而是在拖动柄的 `@mousedown.left.prevent` 中明确调用 `getCurrentWindow().startDragging()`。这个调用会从 Vue 前端发给 Tauri 的 Rust 原生窗口层；`src-tauri/capabilities/default.json` 中的 `core:window:allow-start-dragging` 则是对此操作的授权。这样“网页按钮被按下”与“Windows 窗口进入拖动状态”之间的路径是明确且可检查的。
+
+🧠 记忆点：界面的视觉反馈、浏览器 DOM 事件和桌面窗口操作属于三个不同层次。看到手势不等于窗口能移动；需要确认事件处理函数真正调用了原生 API，并且该 API 已具备 Tauri capability 权限。
 
 🛠️ 环境记录：Windows 上安装 Rust 时，`winget` 出现 `0x8a15000f`（软件源数据缺失）。改用 Rust 官方 `rustup-init.exe` 完成安装，并通过 Visual Studio Community 安装器补齐“使用 C++ 的桌面开发”组件。重新打开终端后，使用 `rustc --version` 和 `cargo --version` 验证环境。
 

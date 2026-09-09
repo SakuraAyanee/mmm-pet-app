@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { PetState } from '../types/pet'
 import mamimiImage from '../assets/characters/mamimi/mamimi-cutout.png'
 
@@ -22,6 +23,10 @@ function movePet() {
   petColor.value = `hsl(${Math.floor(Math.random() * 360)} 75% 78%)`
   affection.value += 1
 }
+
+async function startWindowDrag() {
+  await getCurrentWindow().startDragging()
+}
 </script>
 
 <template>
@@ -29,9 +34,9 @@ function movePet() {
     <button
       type="button"
       class="pet-avatar__drag-handle"
-      data-tauri-drag-region="deep"
       aria-label="拖动窗口"
       title="拖动窗口"
+      @mousedown.left.prevent="startWindowDrag"
     >
       <span></span>
       <span></span>
