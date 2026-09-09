@@ -5,9 +5,13 @@ import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window'
 import mamimiImage from '../assets/characters/mamimi/mamimi-cutout.png'
 
 const petImage = ref<HTMLImageElement | null>(null)
+const petAvatar = ref<HTMLElement | null>(null)
 const dragHandle = ref<HTMLButtonElement | null>(null)
+const contextMenu = ref<HTMLElement | null>(null)
 const isJumping = ref(false)
 const isDragHandleVisible = ref(false)
+const isContextMenuOpen = ref(false)
+const contextMenuPosition = ref({ x: 0, y: 0 })
 
 const appWindow = getCurrentWindow()
 const alphaThreshold = 12
@@ -25,6 +29,7 @@ let petDragStarted = false
 let dragHandleHideTimer: ReturnType<typeof setTimeout> | undefined
 
 function jumpPet() {
+  isContextMenuOpen.value = false
   isJumping.value = false
   requestAnimationFrame(() => {
     isJumping.value = true
@@ -38,6 +43,7 @@ async function startWindowDrag() {
 
 function beginPetGesture(event: PointerEvent) {
   const target = event.currentTarget as HTMLElement
+  isContextMenuOpen.value = false
   petPointerStart = { x: event.clientX, y: event.clientY }
   petDragStarted = false
   target.setPointerCapture(event.pointerId)
@@ -82,6 +88,28 @@ function finishPetGesture(event: PointerEvent) {
 function cancelPetGesture() {
   petPointerStart = null
   petDragStarted = false
+}
+
+function openContextMenu(event: MouseEvent) {
+  const avatar = petAvatar.value
+  if (!avatar) {
+    return
+  }
+
+  const rect = avatar.getBoundingClientRect()
+  contextMenuPosition.value = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  }
+  isContextMenuOpen.value = true
+}
+
+function closeContextMenu() {
+  isContextMenuOpen.value = false
+}
+
+async function closeApp() {
+  await appWindow.close()
 }
 
 function showDragHandle() {
@@ -186,7 +214,8 @@ async function updateCursorEventMode() {
     const isPointerInInteractiveArea =
       isDraggingWindow ||
       isPointOnOpaquePetPixel(x, y) ||
-      isPointInsideElement(dragHandle.value, x, y)
+      isPointInsideElement(dragHandle.value, x, y) ||
+      isPointInsideElement(contextMenu.value, x, y)
 
     if (isPointerInInteractiveArea && !isDraggingWindow) {
       showDragHandle()
@@ -242,6 +271,7 @@ onUnmounted(() => {
 
 <template>
   <section
+    ref="petAvatar"
     class="pet-avatar"
     :class="{ 'pet-avatar--interactive': isDragHandleVisible }"
     aria-label="桌面宠物"
@@ -266,6 +296,7 @@ onUnmounted(() => {
       aria-label="点击让宠物跳跃，拖动可移动窗口"
       @animationend="isJumping = false"
       @dragstart.prevent
+      @contextmenu.prevent="openContextMenu"
       @pointercancel="cancelPetGesture"
       @pointerdown.left="beginPetGesture"
       @pointermove="trackPetGesture"
@@ -280,6 +311,21 @@ onUnmounted(() => {
         @load="preparePetAlphaMap"
       />
     </button>
+
+    <menu
+      v-if="isContextMenuOpen"
+      ref="contextMenu"
+      class="pet-avatar__context-menu"
+      :style="{
+        left: `${contextMenuPosition.x}px`,
+        top: `${contextMenuPosition.y}px`,
+      }"
+    >
+      <li><button type="button" @click="closeContextMenu">禁用跳跃</button></li>
+      <li><button type="button" @click="closeContextMenu">调整大小</button></li>
+      <li><button type="button" @click="closeContextMenu">重置位置</button></li>
+      <li><button type="button" @click="closeApp">退出</button></li>
+    </menu>
   </section>
 </template>
 
@@ -351,6 +397,37 @@ onUnmounted(() => {
 
 .pet-avatar__body--jumping {
   animation: pet-jump 480ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pet-avatar__context-menu {
+  position: absolute;
+  z-index: 2;
+  min-width: 8rem;
+  margin: 0;
+  padding: 0.35rem;
+  border: 1px solid rgb(255 255 255 / 55%);
+  border-radius: 0.65rem;
+  background: rgb(35 22 48 / 92%);
+  box-shadow: 0 0.5rem 1.25rem rgb(0 0 0 / 28%);
+  list-style: none;
+}
+
+.pet-avatar__context-menu button {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.pet-avatar__context-menu button:hover,
+.pet-avatar__context-menu button:focus-visible {
+  background: rgb(255 255 255 / 16%);
+  outline: none;
 }
 
 @keyframes pet-jump {
