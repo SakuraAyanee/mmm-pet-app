@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import SpineAvatar from './components/SpineAvatar.vue'
+import PetAvatar from './components/PetAvatar.vue'
 </script>
 
 <template>
   <main class="pet-app">
-    <SpineAvatar animation="wait" />
+    <PetAvatar />
   </main>
 </template>
 
@@ -12,6 +12,7 @@ import SpineAvatar from './components/SpineAvatar.vue'
 .pet-app {
   display: grid;
   min-height: 100vh;
-  place-items: center;
+  padding-bottom: 1rem;
+  place-items: end center;
 }
 </style>

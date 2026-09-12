@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import * as PIXI from 'pixi.js'
 
 interface LegacyPixiApplication {
@@ -25,10 +25,14 @@ const props = withDefaults(
   defineProps<{
     animation?: string
     loop?: boolean
+    displayWidth?: number
+    displayHeight?: number
   }>(),
   {
     animation: 'wait',
     loop: true,
+    displayWidth: 384,
+    displayHeight: 544,
   },
 )
 
@@ -41,9 +45,24 @@ let avatar: PIXI.spine.Spine | null = null
 let resizeObserver: ResizeObserver | null = null
 let loader: PIXI.loaders.Loader | null = null
 let isUnmounted = false
+let resolutionFrame: number | null = null
 
 const modelUrl = `${import.meta.env.BASE_URL}spine/mamimi/data.json`
 const padding = 12
+const minimumResolution = 2
+const maximumResolution = 3
+
+const avatarStyle = computed(() => ({
+  width: `${props.displayWidth}px`,
+  height: `${props.displayHeight}px`,
+}))
+
+function getRenderResolution() {
+  return Math.min(
+    maximumResolution,
+    Math.max(minimumResolution, window.devicePixelRatio || 1),
+  )
+}
 
 function layoutAvatar() {
   const host = canvasHost.value
@@ -51,8 +70,8 @@ function layoutAvatar() {
     return
   }
 
-  const width = Math.max(1, host.clientWidth)
-  const height = Math.max(1, host.clientHeight)
+  const width = Math.max(1, props.displayWidth)
+  const height = Math.max(1, props.displayHeight)
   app.renderer.resize(width, height)
 
   avatar.scale.set(1)
@@ -73,6 +92,28 @@ function layoutAvatar() {
     width / 2 - (bounds.x + bounds.width / 2) * scale,
     height - padding - (bounds.y + bounds.height) * scale,
   )
+}
+
+function updateRendererLayout() {
+  resolutionFrame = null
+  if (!app) {
+    return
+  }
+
+  const nextResolution = getRenderResolution()
+  if (Math.abs(app.renderer.resolution - nextResolution) >= 0.01) {
+    app.renderer.resolution = nextResolution
+  }
+
+  layoutAvatar()
+}
+
+function scheduleRendererLayout() {
+  if (resolutionFrame !== null) {
+    cancelAnimationFrame(resolutionFrame)
+  }
+
+  resolutionFrame = requestAnimationFrame(updateRendererLayout)
 }
 
 function playAnimation(name: string, loop = true) {
@@ -103,12 +144,12 @@ async function createRenderer() {
       PIXI as typeof PIXI & { Application: LegacyPixiApplicationConstructor }
     ).Application
     app = new Application(
-      Math.max(1, host.clientWidth),
-      Math.max(1, host.clientHeight),
+      Math.max(1, props.displayWidth),
+      Math.max(1, props.displayHeight),
       {
         antialias: true,
         transparent: true,
-        resolution: window.devicePixelRatio || 1,
+        resolution: getRenderResolution(),
       },
     )
     app.renderer.autoResize = true
@@ -159,8 +200,17 @@ onMounted(() => {
   void createRenderer()
 })
 
+watch(
+  [() => props.displayWidth, () => props.displayHeight],
+  scheduleRendererLayout,
+  { flush: 'post' },
+)
+
 onUnmounted(() => {
   isUnmounted = true
+  if (resolutionFrame !== null) {
+    cancelAnimationFrame(resolutionFrame)
+  }
   resizeObserver?.disconnect()
   loader?.reset()
   app?.destroy(true)
@@ -173,7 +223,11 @@ defineExpose({ playAnimation })
 </script>
 
 <template>
-  <section class="spine-avatar" aria-label="Spine 角色预览">
+  <section
+    class="spine-avatar"
+    :style="avatarStyle"
+    aria-label="Spine 角色预览"
+  >
     <div ref="canvasHost" class="spine-avatar__canvas-host"></div>
     <p v-if="status === 'loading'" class="spine-avatar__status">模型加载中…</p>
     <p v-else-if="status === 'error'" class="spine-avatar__status spine-avatar__status--error">
@@ -185,8 +239,6 @@ defineExpose({ playAnimation })
 <style scoped>
 .spine-avatar {
   position: relative;
-  width: min(72vw, 22rem);
-  height: min(68vh, 31rem);
 }
 
 .spine-avatar__canvas-host {

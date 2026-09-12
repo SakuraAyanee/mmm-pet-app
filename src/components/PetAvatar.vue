@@ -1,18 +1,18 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { isTauri } from '@tauri-apps/api/core'
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window'
 import mamimiImage from '../assets/characters/mamimi/mamimi-cutout.png'
+import SpineAvatar from './SpineAvatar.vue'
 
-const petImage = ref<HTMLImageElement | null>(null)
+const hitMaskImage = ref<HTMLImageElement | null>(null)
+const petBody = ref<HTMLElement | null>(null)
 const petAvatar = ref<HTMLElement | null>(null)
 const dragHandle = ref<HTMLButtonElement | null>(null)
 const contextMenu = ref<HTMLElement | null>(null)
 const resizeHandle = ref<HTMLButtonElement | null>(null)
 const resizeResetButton = ref<HTMLButtonElement | null>(null)
 const resizeConfirmButton = ref<HTMLButtonElement | null>(null)
-const isJumping = ref(false)
-const isJumpEnabled = ref(true)
 const isDragHandleVisible = ref(false)
 const isContextMenuOpen = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
@@ -21,15 +21,16 @@ const petScale = ref(1)
 const confirmedPetScale = ref(1)
 const resizeFrameStyle = ref<Record<string, string>>({})
 
-const appWindow = getCurrentWindow()
+const appWindow = isTauri() ? getCurrentWindow() : null
 const alphaThreshold = 12
 const dragThreshold = 6
 const dragHandleHideDelay = 420
 const defaultPetScale = 1
 const minimumPetScale = 0.6
 const maximumPetScale = 1.4
+const basePetWidth = 384
+const basePetHeight = 544
 const petScaleStorageKey = 'mmm-pet-scale'
-const jumpEnabledStorageKey = 'mmm-pet-jump-enabled'
 let alphaPixels: Uint8ClampedArray | null = null
 let imageWidth = 0
 let imageHeight = 0
@@ -43,20 +44,18 @@ let dragHandleHideTimer: ReturnType<typeof setTimeout> | undefined
 let resizePointerStart: { x: number; y: number } | null = null
 let resizeStartScale = defaultPetScale
 
-function jumpPet() {
-  if (!isJumpEnabled.value) {
-    return
-  }
+const petDisplayWidth = computed(() => basePetWidth * petScale.value)
+const petDisplayHeight = computed(() => basePetHeight * petScale.value)
 
-  isContextMenuOpen.value = false
-  isJumping.value = false
-  requestAnimationFrame(() => {
-    isJumping.value = true
-  })
-}
+const petBodyStyle = computed(() => ({
+  width: `${petDisplayWidth.value}px`,
+  height: `${petDisplayHeight.value}px`,
+}))
+
+const petScalePercent = computed(() => Math.round(petScale.value * 100))
 
 async function startWindowDrag() {
-  if (isResizing.value) {
+  if (isResizing.value || !appWindow) {
     return
   }
 
@@ -101,10 +100,6 @@ function finishPetGesture(event: PointerEvent) {
     return
   }
 
-  if (!petDragStarted) {
-    jumpPet()
-  }
-
   if (target.hasPointerCapture(event.pointerId)) {
     target.releasePointerCapture(event.pointerId)
   }
@@ -136,18 +131,12 @@ function closeContextMenu() {
 }
 
 async function closeApp() {
-  await appWindow.close()
-}
-
-function toggleJump() {
-  isJumpEnabled.value = !isJumpEnabled.value
-  localStorage.setItem(jumpEnabledStorageKey, String(isJumpEnabled.value))
-  closeContextMenu()
+  await appWindow?.close()
 }
 
 async function resetWindowPosition() {
   closeContextMenu()
-  await appWindow.center()
+  await appWindow?.center()
 }
 
 function clampPetScale(scale: number) {
@@ -156,13 +145,13 @@ function clampPetScale(scale: number) {
 
 function updateResizeFrame() {
   const avatar = petAvatar.value
-  const image = petImage.value
-  if (!avatar || !image) {
+  const body = petBody.value
+  if (!avatar || !body) {
     return
   }
 
   const avatarRect = avatar.getBoundingClientRect()
-  const imageRect = image.getBoundingClientRect()
+  const imageRect = body.getBoundingClientRect()
   resizeFrameStyle.value = {
     left: `${imageRect.left - avatarRect.left}px`,
     top: `${imageRect.top - avatarRect.top}px`,
@@ -185,14 +174,12 @@ function beginResize(event: PointerEvent) {
 }
 
 function resizePet(event: PointerEvent) {
-  if (!resizePointerStart || !petImage.value) {
+  if (!resizePointerStart || !petBody.value) {
     return
   }
 
-  const distance =
-    (event.clientX - resizePointerStart.x + event.clientY - resizePointerStart.y) / 2
-  const baseWidth = petImage.value.clientWidth
-  petScale.value = clampPetScale(resizeStartScale + distance / baseWidth)
+  const distance = event.clientX - resizePointerStart.x
+  petScale.value = clampPetScale(resizeStartScale + distance / basePetWidth)
   void nextTick(updateResizeFrame)
 }
 
@@ -248,7 +235,7 @@ function scheduleDragHandleHide() {
 }
 
 function preparePetAlphaMap() {
-  const image = petImage.value
+  const image = hitMaskImage.value
 
   if (!image || image.naturalWidth === 0 || image.naturalHeight === 0) {
     return
@@ -283,7 +270,7 @@ function isPointInsideElement(
 }
 
 function isPointOnOpaquePetPixel(x: number, y: number) {
-  const image = petImage.value
+  const image = hitMaskImage.value
   if (!image || !alphaPixels || imageWidth === 0 || imageHeight === 0) {
     return false
   }
@@ -312,7 +299,7 @@ function isPointOnOpaquePetPixel(x: number, y: number) {
 }
 
 async function updateCursorEventMode() {
-  if (isCheckingPointer || !alphaPixels) {
+  if (isCheckingPointer || !alphaPixels || !appWindow) {
     return
   }
 
@@ -327,6 +314,7 @@ async function updateCursorEventMode() {
     const x = (pointer.x - windowPosition.x) / scaleFactor
     const y = (pointer.y - windowPosition.y) / scaleFactor
     const isPointerInInteractiveArea =
+      isResizing.value ||
       isDraggingWindow ||
       isPointOnOpaquePetPixel(x, y) ||
       isPointInsideElement(dragHandle.value, x, y) ||
@@ -366,8 +354,6 @@ onMounted(() => {
     confirmedPetScale.value = petScale.value
   }
 
-  isJumpEnabled.value = localStorage.getItem(jumpEnabledStorageKey) !== 'false'
-
   preparePetAlphaMap()
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('mouseup', stopWindowDrag)
@@ -391,7 +377,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('mouseup', stopWindowDrag)
 
-  if (ignoresCursorEvents) {
+  if (ignoresCursorEvents && appWindow) {
     void appWindow.setIgnoreCursorEvents(false)
   }
 })
@@ -418,13 +404,13 @@ onUnmounted(() => {
       <span></span>
     </button>
 
-    <button
-      type="button"
+    <div
+      ref="petBody"
       class="pet-avatar__body"
-      :class="{ 'pet-avatar__body--jumping': isJumping }"
-      :style="{ '--pet-scale': String(petScale) }"
-      aria-label="点击让宠物跳跃，拖动可移动窗口"
-      @animationend="isJumping = false"
+      :style="petBodyStyle"
+      role="button"
+      tabindex="0"
+      aria-label="拖动角色可移动窗口，右键打开菜单"
       @dragstart.prevent
       @contextmenu.prevent="openContextMenu"
       @pointercancel="cancelPetGesture"
@@ -432,21 +418,31 @@ onUnmounted(() => {
       @pointermove="trackPetGesture"
       @pointerup.left="finishPetGesture"
     >
+      <SpineAvatar
+        animation="wait"
+        :display-width="petDisplayWidth"
+        :display-height="petDisplayHeight"
+      />
       <img
-        ref="petImage"
+        ref="hitMaskImage"
         :src="mamimiImage"
-        alt="田中摩美美桌面宠物"
+        class="pet-avatar__hit-mask"
+        alt=""
+        aria-hidden="true"
         draggable="false"
         @dragstart.prevent
         @load="preparePetAlphaMap"
       />
-    </button>
+    </div>
 
     <div
       v-if="isResizing"
       class="pet-avatar__resize-frame"
       :style="resizeFrameStyle"
     >
+      <output class="pet-avatar__resize-value" aria-live="polite">
+        {{ petScalePercent }}%
+      </output>
       <button
         ref="resizeResetButton"
         type="button"
@@ -488,11 +484,6 @@ onUnmounted(() => {
         top: `${contextMenuPosition.y}px`,
       }"
     >
-      <li>
-        <button type="button" @click="toggleJump">
-          {{ isJumpEnabled ? '禁用跳跃' : '启用跳跃' }}
-        </button>
-      </li>
       <li><button type="button" @click="openResizeMode">调整大小</button></li>
       <li><button type="button" @click="resetWindowPosition">重置位置</button></li>
       <li><button type="button" @click="closeApp">退出</button></li>
@@ -556,24 +547,15 @@ onUnmounted(() => {
 }
 
 .pet-avatar__body {
+  position: relative;
   border: 0;
   padding: 0;
   background: transparent;
   cursor: grab;
   line-height: 0;
-  transform: scale(var(--pet-scale));
-  transform-origin: bottom center;
   user-select: none;
   -webkit-user-select: none;
   -webkit-user-drag: none;
-}
-
-.pet-avatar__body--jumping {
-  cursor: grabbing;
-}
-
-.pet-avatar__body--jumping img {
-  animation: pet-jump 480ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .pet-avatar__context-menu {
@@ -607,31 +589,15 @@ onUnmounted(() => {
   outline: none;
 }
 
-@keyframes pet-jump {
-  0% {
-    transform: translateY(0) scale(1);
-  }
-
-  38% {
-    transform: translateY(-1.5rem) scale(1.015);
-  }
-
-  72% {
-    transform: translateY(0) scale(0.985);
-  }
-
-  100% {
-    transform: translateY(0) scale(1);
-  }
-}
-
-.pet-avatar__body img {
+.pet-avatar__hit-mask {
+  position: absolute;
+  inset: 0;
   display: block;
-  width: min(72vw, 22rem);
-  height: min(68vh, 31rem);
+  width: 100%;
+  height: 100%;
   object-fit: contain;
-  filter: drop-shadow(0 0.75rem 0.75rem rgb(0 0 0 / 20%));
-  transition: filter 200ms ease;
+  opacity: 0;
+  pointer-events: none;
   user-select: none;
   -webkit-user-select: none;
   -webkit-user-drag: none;
@@ -664,6 +630,18 @@ onUnmounted(() => {
   pointer-events: auto;
 }
 
+.pet-avatar__resize-value {
+  position: absolute;
+  right: 0.35rem;
+  bottom: 0.35rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.35rem;
+  background: rgb(35 22 48 / 82%);
+  color: #fff;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
 .pet-avatar__resize-handle {
   right: -0.55rem;
   bottom: -0.55rem;
@@ -693,8 +671,11 @@ onUnmounted(() => {
   outline: none;
 }
 
-.pet-avatar__body:hover img {
-  filter: drop-shadow(0 1rem 1rem rgb(0 0 0 / 28%));
+.pet-avatar__body :deep(canvas) {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+  touch-action: none;
 }
 
 </style>
