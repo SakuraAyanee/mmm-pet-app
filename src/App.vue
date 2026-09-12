@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import PetAvatar from './components/PetAvatar.vue'
+import SpineAvatar from './components/SpineAvatar.vue'
 </script>
 
 <template>
   <main class="pet-app">
-    <PetAvatar />
+    <SpineAvatar animation="wait" />
   </main>
 </template>
 
