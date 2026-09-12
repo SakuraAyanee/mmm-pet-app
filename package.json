@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
-    "pixi-spine": "1.4.0",
+    "pixi-spine": "1.5.16",
     "pixi.js": "4.8.9",
     "vue": "^3.5.41"
   },

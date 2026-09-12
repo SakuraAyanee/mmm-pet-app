@@ -2,10 +2,29 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { isTauri } from '@tauri-apps/api/core'
 import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window'
-import mamimiImage from '../assets/characters/mamimi/mamimi-cutout.png'
 import SpineAvatar from './SpineAvatar.vue'
 
-const hitMaskImage = ref<HTMLImageElement | null>(null)
+interface SpineHitMask {
+  alpha: Uint8Array
+  width: number
+  height: number
+}
+
+interface ClickAnimationPreset {
+  id: string
+  label: string
+  description: string
+  mode: 'overlay' | 'authored'
+  animation: string
+  loopRepeats?: number
+}
+
+interface ExpressionOption {
+  id: string
+  label: string
+}
+
+const spineAvatar = ref<InstanceType<typeof SpineAvatar> | null>(null)
 const petBody = ref<HTMLElement | null>(null)
 const petAvatar = ref<HTMLElement | null>(null)
 const dragHandle = ref<HTMLButtonElement | null>(null)
@@ -13,13 +32,18 @@ const contextMenu = ref<HTMLElement | null>(null)
 const resizeHandle = ref<HTMLButtonElement | null>(null)
 const resizeResetButton = ref<HTMLButtonElement | null>(null)
 const resizeConfirmButton = ref<HTMLButtonElement | null>(null)
+const animationWorkbench = ref<HTMLElement | null>(null)
 const isDragHandleVisible = ref(false)
 const isContextMenuOpen = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
 const isResizing = ref(false)
+const isAlwaysOnTop = ref(true)
+const isUpdatingAlwaysOnTop = ref(false)
+const isAnimationWorkbenchOpen = ref(false)
 const petScale = ref(1)
 const confirmedPetScale = ref(1)
 const resizeFrameStyle = ref<Record<string, string>>({})
+const animationWorkbenchPosition = ref({ x: 16, y: 16 })
 
 const appWindow = isTauri() ? getCurrentWindow() : null
 const alphaThreshold = 12
@@ -31,9 +55,12 @@ const maximumPetScale = 1.4
 const basePetWidth = 384
 const basePetHeight = 544
 const petScaleStorageKey = 'mmm-pet-scale'
-let alphaPixels: Uint8ClampedArray | null = null
-let imageWidth = 0
-let imageHeight = 0
+const alwaysOnTopStorageKey = 'mmm-pet-always-on-top'
+const clickAnimationStorageKey = 'mmm-pet-click-animation'
+const clickExpressionStorageKey = 'mmm-pet-click-expression'
+let alphaPixels: Uint8Array | null = null
+let maskWidth = 0
+let maskHeight = 0
 let pointerTimer: ReturnType<typeof setInterval> | undefined
 let isCheckingPointer = false
 let ignoresCursorEvents = false
@@ -43,6 +70,143 @@ let petDragStarted = false
 let dragHandleHideTimer: ReturnType<typeof setTimeout> | undefined
 let resizePointerStart: { x: number; y: number } | null = null
 let resizeStartScale = defaultPetScale
+let workbenchPointerStart: {
+  pointerId: number
+  x: number
+  y: number
+  originX: number
+  originY: number
+} | null = null
+
+const clickAnimationPresets: ClickAnimationPreset[] = [
+  {
+    id: 'gentle-yes',
+    label: '点头回应',
+    description: '在 wait 上只叠加作者提供的 yes 动作，不追加表情。',
+    mode: 'overlay',
+    animation: 'yes',
+  },
+  {
+    id: 'serious-no',
+    label: '摇头回应',
+    description: '在 wait 上只叠加作者提供的 no 动作，不追加表情。',
+    mode: 'overlay',
+    animation: 'no',
+  },
+  {
+    id: 'authored-anger',
+    label: '生气（anger1）',
+    description: '播放作者定义的 anger1 循环段，再衔接 arm_down_R。',
+    mode: 'authored',
+    animation: 'anger1',
+    loopRepeats: 1,
+  },
+  {
+    id: 'authored-hello',
+    label: '打招呼（hello）',
+    description: '播放作者定义的 hello 循环段，再衔接 arm_down_L。',
+    mode: 'authored',
+    animation: 'hello',
+    loopRepeats: 1,
+  },
+  {
+    id: 'authored-play',
+    label: '玩耍（play）',
+    description: '播放作者定义的 play 循环段，再衔接 arm_down_L。',
+    mode: 'authored',
+    animation: 'play',
+    loopRepeats: 1,
+  },
+  {
+    id: 'authored-sad',
+    label: '难过（sad1）',
+    description: '播放作者定义的 sad1 循环段，再衔接 arm_down。',
+    mode: 'authored',
+    animation: 'sad1',
+    loopRepeats: 1,
+  },
+  {
+    id: 'authored-shy',
+    label: '害羞（shy1）',
+    description: '播放作者定义的 shy1 循环段，再衔接 arm_down2。',
+    mode: 'authored',
+    animation: 'shy1',
+    loopRepeats: 1,
+  },
+  {
+    id: 'authored-sleep',
+    label: '睡觉（sleep）',
+    description: '播放作者定义的 sleep 循环段，再衔接 arm_down_L。',
+    mode: 'authored',
+    animation: 'sleep',
+    loopRepeats: 1,
+  },
+  {
+    id: 'authored-smile',
+    label: '微笑（smile1）',
+    description: '播放作者定义的 smile1 循环段，再衔接 arm_down_L。',
+    mode: 'authored',
+    animation: 'smile1',
+    loopRepeats: 1,
+  },
+  {
+    id: 'authored-surprise',
+    label: '惊讶（surp1）',
+    description: '播放作者定义的 surp1 循环段，再衔接 arm_down_R。',
+    mode: 'authored',
+    animation: 'surp1',
+    loopRepeats: 1,
+  },
+  {
+    id: 'authored-think',
+    label: '思考（think）',
+    description: '播放作者定义的 think 循环段，再衔接 arm_down_L。',
+    mode: 'authored',
+    animation: 'think',
+    loopRepeats: 1,
+  },
+  {
+    id: 'authored-touch',
+    label: '完整触碰（touch）',
+    description: '进入 touch 后重复作者标记的循环段两次，再衔接 arm_down2。',
+    mode: 'authored',
+    animation: 'touch',
+    loopRepeats: 2,
+  },
+  {
+    id: 'skill-action',
+    label: '技能动作（独立）',
+    description: 'skill1 没有作者定义的 relay，仅完整播放后恢复 wait。',
+    mode: 'authored',
+    animation: 'skill1',
+  },
+]
+
+const expressionOptions: ExpressionOption[] = [
+  { id: '', label: '跟随原动画（推荐）' },
+  { id: 'face_wait', label: '默认表情' },
+  { id: 'face_wait2', label: '待机表情 2' },
+  { id: 'face_wait3', label: '待机表情 3' },
+  { id: 'face_smile', label: '微笑' },
+  { id: 'face_shy', label: '害羞' },
+  { id: 'face_serious', label: '认真' },
+  { id: 'face_sad', label: '难过' },
+  { id: 'face_cry', label: '哭泣' },
+  { id: 'face_anger', label: '生气' },
+  { id: 'face_surp', label: '惊讶' },
+  { id: 'face_close', label: '闭眼' },
+  { id: 'face_close2', label: '闭眼 2' },
+]
+
+const legacyClickAnimationIds: Record<string, string> = {
+  'shy-response': 'authored-shy',
+  'full-touch': 'authored-touch',
+}
+
+const savedClickAnimationId = ref(clickAnimationPresets[0].id)
+const draftClickAnimationId = ref(clickAnimationPresets[0].id)
+const savedClickExpressionId = ref('')
+const draftClickExpressionId = ref('')
 
 const petDisplayWidth = computed(() => basePetWidth * petScale.value)
 const petDisplayHeight = computed(() => basePetHeight * petScale.value)
@@ -54,8 +218,135 @@ const petBodyStyle = computed(() => ({
 
 const petScalePercent = computed(() => Math.round(petScale.value * 100))
 
+const animationWorkbenchStyle = computed(() => ({
+  left: `${animationWorkbenchPosition.value.x}px`,
+  top: `${animationWorkbenchPosition.value.y}px`,
+}))
+
+const draftClickAnimation = computed(
+  () =>
+    clickAnimationPresets.find(
+      (preset) => preset.id === draftClickAnimationId.value,
+    ) ?? clickAnimationPresets[0],
+)
+
+function playClickAnimation(preset: ClickAnimationPreset, expression = '') {
+  const renderer = spineAvatar.value
+  if (!renderer) {
+    return
+  }
+
+  if (preset.mode === 'overlay') {
+    renderer.playOverlayAnimation(preset.animation, expression || null)
+    return
+  }
+
+  if (preset.mode === 'authored') {
+    renderer.playAuthoredAnimation(
+      preset.animation,
+      preset.loopRepeats ?? 1,
+      expression || null,
+    )
+  }
+}
+
+function playSavedClickAnimation() {
+  if (isAnimationWorkbenchOpen.value) {
+    playClickAnimation(draftClickAnimation.value, draftClickExpressionId.value)
+    return
+  }
+
+  const preset =
+    clickAnimationPresets.find(
+      (candidate) => candidate.id === savedClickAnimationId.value,
+    ) ?? clickAnimationPresets[0]
+
+  playClickAnimation(preset, savedClickExpressionId.value)
+}
+
+function openAnimationWorkbench() {
+  closeContextMenu()
+  draftClickAnimationId.value = savedClickAnimationId.value
+  draftClickExpressionId.value = savedClickExpressionId.value
+  isAnimationWorkbenchOpen.value = true
+  void nextTick(() =>
+    moveWorkbenchIntoViewport(
+      animationWorkbenchPosition.value.x,
+      animationWorkbenchPosition.value.y,
+    ),
+  )
+}
+
+function previewDraftClickAnimation() {
+  playClickAnimation(draftClickAnimation.value, draftClickExpressionId.value)
+}
+
+function saveDraftClickAnimation() {
+  savedClickAnimationId.value = draftClickAnimation.value.id
+  savedClickExpressionId.value = draftClickExpressionId.value
+  localStorage.setItem(clickAnimationStorageKey, draftClickAnimation.value.id)
+  localStorage.setItem(clickExpressionStorageKey, draftClickExpressionId.value)
+  isAnimationWorkbenchOpen.value = false
+}
+
+function closeAnimationWorkbench() {
+  isAnimationWorkbenchOpen.value = false
+  workbenchPointerStart = null
+}
+
+function moveWorkbenchIntoViewport(x: number, y: number) {
+  const panel = animationWorkbench.value
+  const width = panel?.offsetWidth ?? 304
+  const height = panel?.offsetHeight ?? 220
+
+  animationWorkbenchPosition.value = {
+    x: Math.min(Math.max(8, x), Math.max(8, window.innerWidth - width - 8)),
+    y: Math.min(Math.max(8, y), Math.max(8, window.innerHeight - height - 8)),
+  }
+}
+
+function beginWorkbenchDrag(event: PointerEvent) {
+  const target = event.target as HTMLElement
+  if (target.closest('button, select, input')) {
+    return
+  }
+
+  const handle = event.currentTarget as HTMLElement
+  workbenchPointerStart = {
+    pointerId: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    originX: animationWorkbenchPosition.value.x,
+    originY: animationWorkbenchPosition.value.y,
+  }
+  handle.setPointerCapture(event.pointerId)
+}
+
+function dragAnimationWorkbench(event: PointerEvent) {
+  if (
+    !workbenchPointerStart ||
+    workbenchPointerStart.pointerId !== event.pointerId
+  ) {
+    return
+  }
+
+  moveWorkbenchIntoViewport(
+    workbenchPointerStart.originX + event.clientX - workbenchPointerStart.x,
+    workbenchPointerStart.originY + event.clientY - workbenchPointerStart.y,
+  )
+}
+
+function finishWorkbenchDrag(event: PointerEvent) {
+  const handle = event.currentTarget as HTMLElement
+  if (handle.hasPointerCapture(event.pointerId)) {
+    handle.releasePointerCapture(event.pointerId)
+  }
+
+  workbenchPointerStart = null
+}
+
 async function startWindowDrag() {
-  if (isResizing.value || !appWindow) {
+  if (!appWindow) {
     return
   }
 
@@ -64,10 +355,6 @@ async function startWindowDrag() {
 }
 
 function beginPetGesture(event: PointerEvent) {
-  if (isResizing.value) {
-    return
-  }
-
   const target = event.currentTarget as HTMLElement
   isContextMenuOpen.value = false
   petPointerStart = { x: event.clientX, y: event.clientY }
@@ -104,6 +391,10 @@ function finishPetGesture(event: PointerEvent) {
     target.releasePointerCapture(event.pointerId)
   }
 
+  if (!petDragStarted && !isResizing.value) {
+    playSavedClickAnimation()
+  }
+
   petPointerStart = null
 }
 
@@ -119,6 +410,7 @@ function openContextMenu(event: MouseEvent) {
   }
 
   const rect = avatar.getBoundingClientRect()
+  isAnimationWorkbenchOpen.value = false
   contextMenuPosition.value = {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
@@ -132,6 +424,42 @@ function closeContextMenu() {
 
 async function closeApp() {
   await appWindow?.close()
+}
+
+async function restoreAlwaysOnTop() {
+  if (!appWindow) {
+    return
+  }
+
+  const storedValue = localStorage.getItem(alwaysOnTopStorageKey)
+  const shouldStayOnTop = storedValue === null ? true : storedValue === 'true'
+
+  try {
+    await appWindow.setAlwaysOnTop(shouldStayOnTop)
+    isAlwaysOnTop.value = shouldStayOnTop
+  } catch (error) {
+    console.error('恢复窗口置顶状态失败：', error)
+  }
+}
+
+async function toggleAlwaysOnTop() {
+  if (!appWindow || isUpdatingAlwaysOnTop.value) {
+    return
+  }
+
+  isUpdatingAlwaysOnTop.value = true
+  const nextValue = !isAlwaysOnTop.value
+
+  try {
+    await appWindow.setAlwaysOnTop(nextValue)
+    isAlwaysOnTop.value = nextValue
+    localStorage.setItem(alwaysOnTopStorageKey, String(nextValue))
+    closeContextMenu()
+  } catch (error) {
+    console.error('切换窗口置顶状态失败：', error)
+  } finally {
+    isUpdatingAlwaysOnTop.value = false
+  }
 }
 
 async function resetWindowPosition() {
@@ -162,6 +490,7 @@ function updateResizeFrame() {
 
 function openResizeMode() {
   closeContextMenu()
+  closeAnimationWorkbench()
   isResizing.value = true
   void nextTick(updateResizeFrame)
 }
@@ -234,26 +563,11 @@ function scheduleDragHandleHide() {
   }, dragHandleHideDelay)
 }
 
-function preparePetAlphaMap() {
-  const image = hitMaskImage.value
-
-  if (!image || image.naturalWidth === 0 || image.naturalHeight === 0) {
-    return
-  }
-
-  const canvas = document.createElement('canvas')
-  canvas.width = image.naturalWidth
-  canvas.height = image.naturalHeight
-
-  const context = canvas.getContext('2d', { willReadFrequently: true })
-  if (!context) {
-    return
-  }
-
-  context.drawImage(image, 0, 0)
-  alphaPixels = context.getImageData(0, 0, canvas.width, canvas.height).data
-  imageWidth = canvas.width
-  imageHeight = canvas.height
+function applySpineHitMask(mask: SpineHitMask) {
+  alphaPixels = mask.alpha
+  maskWidth = mask.width
+  maskHeight = mask.height
+  void updateCursorEventMode()
 }
 
 function isPointInsideElement(
@@ -270,30 +584,31 @@ function isPointInsideElement(
 }
 
 function isPointOnOpaquePetPixel(x: number, y: number) {
-  const image = hitMaskImage.value
-  if (!image || !alphaPixels || imageWidth === 0 || imageHeight === 0) {
+  const body = petBody.value
+  if (!body || !alphaPixels || maskWidth === 0 || maskHeight === 0) {
     return false
   }
 
-  const rect = image.getBoundingClientRect()
-  const scale = Math.min(rect.width / imageWidth, rect.height / imageHeight)
-  const renderedWidth = imageWidth * scale
-  const renderedHeight = imageHeight * scale
-  const renderedLeft = rect.left + (rect.width - renderedWidth) / 2
-  const renderedTop = rect.top + (rect.height - renderedHeight) / 2
+  const rect = body.getBoundingClientRect()
 
   if (
-    x < renderedLeft ||
-    x >= renderedLeft + renderedWidth ||
-    y < renderedTop ||
-    y >= renderedTop + renderedHeight
+    x < rect.left ||
+    x >= rect.right ||
+    y < rect.top ||
+    y >= rect.bottom
   ) {
     return false
   }
 
-  const pixelX = Math.floor((x - renderedLeft) / scale)
-  const pixelY = Math.floor((y - renderedTop) / scale)
-  const alphaIndex = (pixelY * imageWidth + pixelX) * 4 + 3
+  const pixelX = Math.min(
+    maskWidth - 1,
+    Math.floor(((x - rect.left) / rect.width) * maskWidth),
+  )
+  const pixelY = Math.min(
+    maskHeight - 1,
+    Math.floor(((y - rect.top) / rect.height) * maskHeight),
+  )
+  const alphaIndex = pixelY * maskWidth + pixelX
 
   return alphaPixels[alphaIndex] > alphaThreshold
 }
@@ -321,7 +636,8 @@ async function updateCursorEventMode() {
       isPointInsideElement(contextMenu.value, x, y) ||
       isPointInsideElement(resizeHandle.value, x, y) ||
       isPointInsideElement(resizeResetButton.value, x, y) ||
-      isPointInsideElement(resizeConfirmButton.value, x, y)
+      isPointInsideElement(resizeConfirmButton.value, x, y) ||
+      isPointInsideElement(animationWorkbench.value, x, y)
 
     if (isPointerInInteractiveArea && !isDraggingWindow) {
       showDragHandle()
@@ -344,6 +660,29 @@ function stopWindowDrag() {
 }
 
 onMounted(() => {
+  const storedClickAnimationId = localStorage.getItem(clickAnimationStorageKey)
+  const resolvedClickAnimationId = storedClickAnimationId
+    ? (legacyClickAnimationIds[storedClickAnimationId] ?? storedClickAnimationId)
+    : null
+  const storedClickExpressionId = localStorage.getItem(clickExpressionStorageKey)
+  if (
+    resolvedClickAnimationId &&
+    clickAnimationPresets.some(
+      (preset) => preset.id === resolvedClickAnimationId,
+    )
+  ) {
+    savedClickAnimationId.value = resolvedClickAnimationId
+    draftClickAnimationId.value = resolvedClickAnimationId
+  }
+
+  if (
+    storedClickExpressionId !== null &&
+    expressionOptions.some((option) => option.id === storedClickExpressionId)
+  ) {
+    savedClickExpressionId.value = storedClickExpressionId
+    draftClickExpressionId.value = storedClickExpressionId
+  }
+
   if (!isTauri()) {
     return
   }
@@ -354,7 +693,7 @@ onMounted(() => {
     confirmedPetScale.value = petScale.value
   }
 
-  preparePetAlphaMap()
+  void restoreAlwaysOnTop()
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('mouseup', stopWindowDrag)
   void updateCursorEventMode()
@@ -419,19 +758,11 @@ onUnmounted(() => {
       @pointerup.left="finishPetGesture"
     >
       <SpineAvatar
+        ref="spineAvatar"
         animation="wait"
         :display-width="petDisplayWidth"
         :display-height="petDisplayHeight"
-      />
-      <img
-        ref="hitMaskImage"
-        :src="mamimiImage"
-        class="pet-avatar__hit-mask"
-        alt=""
-        aria-hidden="true"
-        draggable="false"
-        @dragstart.prevent
-        @load="preparePetAlphaMap"
+        @hit-mask-ready="applySpineHitMask"
       />
     </div>
 
@@ -484,10 +815,102 @@ onUnmounted(() => {
         top: `${contextMenuPosition.y}px`,
       }"
     >
+      <li>
+        <button
+          type="button"
+          :disabled="isUpdatingAlwaysOnTop"
+          @click="toggleAlwaysOnTop"
+        >
+          {{ isAlwaysOnTop ? '取消总在最前' : '总在最前' }}
+        </button>
+      </li>
+      <li>
+        <button type="button" @click="openAnimationWorkbench">
+          点击动画测试
+        </button>
+      </li>
       <li><button type="button" @click="openResizeMode">调整大小</button></li>
       <li><button type="button" @click="resetWindowPosition">重置位置</button></li>
       <li><button type="button" @click="closeApp">退出</button></li>
     </menu>
+
+    <aside
+      v-if="isAnimationWorkbenchOpen"
+      ref="animationWorkbench"
+      class="pet-avatar__animation-workbench"
+      :style="animationWorkbenchStyle"
+      aria-label="点击动画测试工作台"
+      @contextmenu.prevent
+      @pointerdown.stop
+    >
+      <header
+        class="pet-avatar__animation-workbench-header"
+        title="拖动测试面板"
+        @pointercancel="finishWorkbenchDrag"
+        @pointerdown.left.prevent="beginWorkbenchDrag"
+        @pointermove="dragAnimationWorkbench"
+        @pointerup.left="finishWorkbenchDrag"
+      >
+        <strong>点击动画测试</strong>
+        <button
+          type="button"
+          class="pet-avatar__animation-workbench-close"
+          aria-label="关闭动画测试"
+          @click="closeAnimationWorkbench"
+        >
+          ×
+        </button>
+      </header>
+
+      <label class="pet-avatar__animation-field">
+        <span>预设组合</span>
+        <select
+          v-model="draftClickAnimationId"
+          @change="previewDraftClickAnimation"
+        >
+          <option
+            v-for="preset in clickAnimationPresets"
+            :key="preset.id"
+            :value="preset.id"
+          >
+            {{ preset.label }}
+          </option>
+        </select>
+      </label>
+
+      <p class="pet-avatar__animation-description">
+        {{ draftClickAnimation.description }}
+      </p>
+
+      <label class="pet-avatar__animation-field">
+        <span>表情覆盖（可选）</span>
+        <select
+          v-model="draftClickExpressionId"
+          @change="previewDraftClickAnimation"
+        >
+          <option
+            v-for="expression in expressionOptions"
+            :key="expression.id"
+            :value="expression.id"
+          >
+            {{ expression.label }}
+          </option>
+        </select>
+      </label>
+
+      <p class="pet-avatar__animation-hint">
+        默认保留作者为动作制作的表情；手动选择时只在本次动作期间覆盖，结束后自动恢复。
+      </p>
+
+      <div class="pet-avatar__animation-actions">
+        <button type="button" @click="previewDraftClickAnimation">
+          预览
+        </button>
+        <button type="button" @click="saveDraftClickAnimation">
+          设为点击动画
+        </button>
+      </div>
+    </aside>
   </section>
 </template>
 
@@ -558,6 +981,10 @@ onUnmounted(() => {
   -webkit-user-drag: none;
 }
 
+.pet-avatar__body:active {
+  cursor: grabbing;
+}
+
 .pet-avatar__context-menu {
   position: absolute;
   z-index: 2;
@@ -589,18 +1016,109 @@ onUnmounted(() => {
   outline: none;
 }
 
-.pet-avatar__hit-mask {
+.pet-avatar__context-menu button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.pet-avatar__animation-workbench {
   position: absolute;
-  inset: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  opacity: 0;
-  pointer-events: none;
+  z-index: 4;
+  width: min(19rem, calc(100vw - 1.5rem));
+  padding: 0.85rem;
+  border: 1px solid rgb(255 255 255 / 55%);
+  border-radius: 0.75rem;
+  background: rgb(35 22 48 / 94%);
+  box-shadow: 0 0.75rem 1.75rem rgb(0 0 0 / 32%);
+  color: #fff;
+  line-height: 1.4;
+}
+
+.pet-avatar__animation-workbench-header,
+.pet-avatar__animation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.pet-avatar__animation-workbench-header {
+  cursor: grab;
   user-select: none;
   -webkit-user-select: none;
-  -webkit-user-drag: none;
+}
+
+.pet-avatar__animation-workbench-header:active {
+  cursor: grabbing;
+}
+
+.pet-avatar__animation-workbench-close {
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1.25rem;
+}
+
+.pet-avatar__animation-workbench-close:hover,
+.pet-avatar__animation-workbench-close:focus-visible {
+  background: rgb(255 255 255 / 16%);
+  outline: none;
+}
+
+.pet-avatar__animation-field {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.7rem;
+  font-size: 0.8rem;
+}
+
+.pet-avatar__animation-field select {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid rgb(255 255 255 / 40%);
+  border-radius: 0.45rem;
+  background: rgb(17 11 24 / 92%);
+  color: #fff;
+  font: inherit;
+}
+
+.pet-avatar__animation-description {
+  min-height: 2.8em;
+  margin: 0.65rem 0;
+  color: rgb(255 255 255 / 78%);
+  font-size: 0.78rem;
+}
+
+.pet-avatar__animation-hint {
+  margin: 0.45rem 0 0.7rem;
+  color: rgb(255 255 255 / 62%);
+  font-size: 0.72rem;
+}
+
+.pet-avatar__animation-actions {
+  justify-content: flex-end;
+}
+
+.pet-avatar__animation-actions button {
+  padding: 0.45rem 0.7rem;
+  border: 1px solid rgb(255 255 255 / 45%);
+  border-radius: 0.45rem;
+  background: rgb(255 255 255 / 10%);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+}
+
+.pet-avatar__animation-actions button:hover,
+.pet-avatar__animation-actions button:focus-visible {
+  background: rgb(255 255 255 / 20%);
+  outline: none;
 }
 
 .pet-avatar__resize-frame {
